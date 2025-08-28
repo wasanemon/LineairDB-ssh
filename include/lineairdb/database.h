@@ -17,6 +17,7 @@
 #ifndef LINEAIRDB_DATABASE_H
 #define LINEAIRDB_DATABASE_H
 
+#include <lineairdb/config.h>
 #include <lineairdb/transaction.h>
 
 #include <functional>
@@ -150,12 +151,20 @@ class Database {
    */
   void RequestCallbacks();
 
+  bool CreateTable(const std::string_view table_name);
+
+  // implement UNIQUE constraint for secondary index
+  template <typename T>
+  bool CreateSecondaryIndex(const std::string_view table_name,
+                            const std::string_view index_name,
+                            const SecondaryIndexOption::Constraint constraint =
+                                SecondaryIndexOption::Constraint::NONE);
+
  private:
   class Impl;
   const std::unique_ptr<Impl> db_pimpl_;
   friend class Transaction;
 };
-
 };  // namespace LineairDB
 
 #endif
