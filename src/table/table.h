@@ -9,14 +9,20 @@
 #include "index/secondary_index.h"
 #include "index/secondary_index_interface.h"
 #include "lineairdb/config.h"
+
+#include "index/concurrent_table.h"
+#include "lineairdb/config.h"
+#include "types/definitions.h"
+
 #include "util/epoch_framework.hpp"
 
 namespace LineairDB {
 
 class Table {
  public:
-  Table(EpochFramework& epoch_framework, const Config& config);
-
+<<<<<<< HEAD
+  Table(EpochFramework& epoch_framework, const Config& config,
+        std::string_view table_name);
   template <typename T>
   bool CreateSecondaryIndex(
       const std::string_view index_name,
@@ -51,5 +57,15 @@ class Table {
   std::unordered_map<std::string,
                      std::unique_ptr<Index::SecondaryIndexInterface>>
       secondary_indices_;
+
+  Table(EpochFramework& epoch_framework, const Config& config,
+        std::string_view table_name);
+
+  const std::string& GetTableName() const;
+  Index::ConcurrentTable& GetPrimaryIndex();
+
+ private:
+  Index::ConcurrentTable primary_index_;
+  std::string table_name_;
 };
 }  // namespace LineairDB

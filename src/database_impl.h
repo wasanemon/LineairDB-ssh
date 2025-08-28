@@ -31,6 +31,7 @@
 #include "index/concurrent_table.h"
 #include "recovery/checkpoint_manager.hpp"
 #include "recovery/logger.h"
+#include "table/table.h"
 #include "thread_pool/thread_pool.h"
 #include "transaction_impl.h"
 #include "util/backoff.hpp"
@@ -50,9 +51,7 @@ class Database::Impl {
         logger_(config_),
         callback_manager_(config_),
         epoch_framework_(c.epoch_duration_ms, EventsOnEpochIsUpdated()),
-        index_(epoch_framework_, config_),
-
-        checkpoint_manager_(config_, index_, epoch_framework_) {
+        checkpoint_manager_(config_, tables_, epoch_framework_, schema_mutex_) {
     if (Database::Impl::CurrentDBInstance == nullptr) {
       Database::Impl::CurrentDBInstance = this;
       SPDLOG_INFO("LineairDB instance has been constructed.");
@@ -60,6 +59,12 @@ class Database::Impl {
       SPDLOG_ERROR(
           "It is prohibited to allocate two LineairDB::Database instance at "
           "the same time.");
+      exit(1);
+    }
+    if (!config_.anonymous_table_name.empty()) {
+      CreateTable(config_.anonymous_table_name);
+    } else {
+      SPDLOG_ERROR("Anonymous table name is not set.");
       exit(1);
     }
     if (config_.enable_recovery) {
@@ -223,7 +228,6 @@ class Database::Impl {
     }
   }
   const Config& GetConfig() const { return config_; }
-  Index::ConcurrentTable& GetIndex() { return index_; }
 
   // NOTE: Called by a special thread managed by EpochFramework.
   std::function<void(EpochNumber)> EventsOnEpochIsUpdated() {
@@ -272,9 +276,10 @@ class Database::Impl {
     if (tables_.find(std::string(table_name)) != tables_.end()) {
       return false;
     }
-    auto [it, inserted] = tables_.emplace(
-        std::piecewise_construct, std::forward_as_tuple(table_name),
-        std::forward_as_tuple(epoch_framework_, config_));
+    auto table = std::make_unique<Table>(epoch_framework_, config_,
+                                         std::string(table_name));
+    auto [it, inserted] =
+        tables_.emplace(std::string(table_name), std::move(table));
     return inserted;
   }
 
@@ -290,13 +295,12 @@ class Database::Impl {
     return it->second.CreateSecondaryIndex<T>(index_name, constraint);
   }
 
-  Table& GetTable(const std::string_view table_name) {
-    std::shared_lock<std::shared_mutex> lk(schema_mutex_);
-    auto it = tables_.find(std::string(table_name));
-    if (it == tables_.end()) {
-      throw std::runtime_error("Table not found");
+  std::optional<Table*> GetTable(const std::string_view table_name) {
+    std::shared_lock lk(schema_mutex_);
+    if (auto it = tables_.find(std::string(table_name)); it != tables_.end()) {
+      return it->second.get();
     }
-    return it->second;
+    return std::nullopt;
   }
 
  private:
@@ -319,13 +323,25 @@ class Database::Impl {
     local_epoch = durable_epoch;
 
     highest_epoch = std::max(highest_epoch, durable_epoch);
-    auto&& recovery_set = logger_.GetRecoverySetFromLogs(durable_epoch);
-    for (auto& entry : recovery_set) {
-      highest_epoch = std::max(
-          highest_epoch, entry.data_item_copy.transaction_id.load().epoch);
+    auto&& recovery_sets = logger_.GetRecoverySetFromLogs(durable_epoch);
 
-      index_.Put(entry.key, std::move(entry.data_item_copy));
+    for (auto& pair : recovery_sets) {
+      CreateTable(pair.first);
+      auto table = GetTable(pair.first);
+      if (!table.has_value()) {
+        SPDLOG_CRITICAL(
+            "Recovery failed: Table {0} could not be found or created.",
+            pair.first);
+        exit(1);
+      }
+      for (auto& snapshot : pair.second) {
+        highest_epoch = std::max(
+            highest_epoch, snapshot.data_item_copy.transaction_id.load().epoch);
+        table.value()->GetPrimaryIndex().Put(
+            snapshot.key, std::move(snapshot.data_item_copy));
+      }
     }
+
     epoch_framework_.MakeMeOffline();
 
     SPDLOG_DEBUG("  Global epoch is resumed from {0}", highest_epoch);
@@ -339,9 +355,9 @@ class Database::Impl {
   Recovery::Logger logger_;
   Callback::CallbackManager callback_manager_;
   EpochFramework epoch_framework_;
-  std::unordered_map<std::string, Table> tables_;
-  Index::ConcurrentTable index_;
+  std::unordered_map<std::string, std::unique_ptr<Table> > tables_;
   std::atomic<EpochNumber> latest_callbacked_epoch_{1};
+  std::shared_mutex schema_mutex_;
   Recovery::CPRManager checkpoint_manager_;
   mutable std::shared_mutex schema_mutex_;
 };

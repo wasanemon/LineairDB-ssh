@@ -55,7 +55,8 @@ namespace LineairDB {
 Transaction::Impl::Impl(Database::Impl* db_pimpl) noexcept
     : current_status_(TxStatus::Running),
       db_pimpl_(db_pimpl),
-      config_ref_(db_pimpl_->GetConfig()) {
+      config_ref_(db_pimpl_->GetConfig()),
+      current_table_(nullptr) {
   TransactionReferences&& tx = {read_set_, write_set_,
                                 db_pimpl_->epoch_framework_, current_status_};
 
@@ -90,28 +91,40 @@ Transaction::Impl::~Impl() noexcept = default;
 
 TxStatus Transaction::Impl::GetCurrentStatus() { return current_status_; }
 
-/* const std::pair<const std::byte* const, const size_t>
-Transaction::Impl::Read( const std::string_view key) { if (IsAborted()) return
-{nullptr, 0};
 
-  for (auto& snapshot : write_set_) {
-    if (snapshot.key == key) {
-      return std::make_pair(snapshot.data_item_copy.value(),
-                            snapshot.data_item_copy.size());
+const std::pair<const std::byte* const, const size_t> Transaction::Impl::Read(
+    const std::string_view key) {
+  if (IsAborted()) return {nullptr, 0};
+  EnsureCurrentTable();
+
+  auto table_write_set_it = write_set_.find(current_table_->GetTableName());
+  if (table_write_set_it != write_set_.end()) {
+    auto write_it = std::find_if(
+        table_write_set_it->second.begin(), table_write_set_it->second.end(),
+        [&](const Snapshot& s) { return s.key == key; });
+    if (write_it != table_write_set_it->second.end()) {
+      return {write_it->data_item_copy.value(),
+              write_it->data_item_copy.size()};
     }
   }
 
-  for (auto& snapshot : read_set_) {
-    if (snapshot.key == key) {
-      return std::make_pair(snapshot.data_item_copy.value(),
-                            snapshot.data_item_copy.size());
+  auto table_read_set_it = read_set_.find(current_table_->GetTableName());
+  if (table_read_set_it != read_set_.end()) {
+    auto read_it = std::find_if(
+        table_read_set_it->second.begin(), table_read_set_it->second.end(),
+        [&](const Snapshot& s) { return s.key == key; });
+    if (read_it != table_read_set_it->second.end()) {
+      return {read_it->data_item_copy.value(), read_it->data_item_copy.size()};
     }
   }
-  auto* index_leaf = db_pimpl_->GetIndex().GetOrInsert(key);
-  Snapshot snapshot = {key, nullptr, 0, index_leaf};
+
+  auto* index_leaf = current_table_->GetPrimaryIndex().GetOrInsert(key);
+
+  Snapshot snapshot = {key, nullptr, 0, index_leaf, 0};
 
   snapshot.data_item_copy = concurrency_control_->Read(key, index_leaf);
-  auto& ref = read_set_.emplace_back(std::move(snapshot));
+  auto& ref = read_set_[current_table_->GetTableName()].emplace_back(
+      std::move(snapshot));
   if (ref.data_item_copy.IsInitialized()) {
     return {ref.data_item_copy.value(), ref.data_item_copy.size()};
   } else {
@@ -208,27 +221,35 @@ std::vector<std::string> Transaction::Impl::ReadSecondaryIndex(
 
   // TODO: if `size` is larger than Config.internal_buffer_size,
   // then we have to abort this transaction or throw exception
-
+  EnsureCurrentTable();
+  auto table_read_set_it = read_set_.find(current_table_->GetTableName());
   bool is_rmf = false;
-  for (auto& snapshot : read_set_) {
-    if (snapshot.key == key) {
+  if (table_read_set_it != read_set_.end()) {
+    auto read_it = std::find_if(
+        table_read_set_it->second.begin(), table_read_set_it->second.end(),
+        [&](const Snapshot& s) { return s.key == key; });
+    if (read_it != table_read_set_it->second.end()) {
+      read_it->is_read_modify_write = true;
       is_rmf = true;
-      snapshot.is_read_modify_write = true;
-      break;
     }
   }
 
-  for (auto& snapshot : write_set_) {
-    if (snapshot.key != key) continue;
-    snapshot.data_item_copy.Reset(value, size);
-    if (is_rmf) snapshot.is_read_modify_write = true;
-    return;
+  auto table_write_set_it = write_set_.find(current_table_->GetTableName());
+  if (table_write_set_it != write_set_.end()) {
+    auto write_it = std::find_if(
+        table_write_set_it->second.begin(), table_write_set_it->second.end(),
+        [&](const Snapshot& s) { return s.key == key; });
+    if (write_it != table_write_set_it->second.end()) {
+      write_it->data_item_copy.Reset(value, size);
+      if (is_rmf) write_it->is_read_modify_write = true;
+      return;
+    }
   }
 
-  auto* index_leaf = db_pimpl_->GetIndex().GetOrInsert(key);
+  auto* index_leaf = current_table_->GetPrimaryIndex().GetOrInsert(key);
 
   concurrency_control_->Write(key, value, size, index_leaf);
-  Snapshot sp(key, value, size, index_leaf);
+  Snapshot sp(key, value, size, index_leaf, 0);
   if (is_rmf) sp.is_read_modify_write = true;
   write_set_.emplace_back(std::move(sp));
 } */
@@ -278,6 +299,7 @@ void Transaction::Impl::Write(const std::string_view table_name,
       state.satisfiedIndexNames.clear();
     }
   }
+  write_set_[current_table_->GetTableName()].emplace_back(std::move(sp));
 }
 
 // ---- Private helpers for SecondaryIndex operations ----
@@ -485,8 +507,9 @@ void Transaction::Impl::WriteSecondaryIndex(
     std::function<bool(std::string_view,
                        const std::pair<const void*, const size_t>)>
         operation) {
-  auto result =
-      db_pimpl_->GetIndex().Scan(begin, end, [&](std::string_view key) {
+  EnsureCurrentTable();
+  auto result = current_table_->GetPrimaryIndex().Scan(
+      begin, end, [&](std::string_view key) {
         const auto read_result = Read(key);
         if (IsAborted()) return true;
         return operation(key, read_result);
@@ -770,6 +793,22 @@ void Transaction::Impl::PostProcessing(TxStatus status) {
   concurrency_control_->PostProcessing(status);
 }
 
+void Transaction::Impl::EnsureCurrentTable() {
+  if (current_table_ == nullptr) {
+    current_table_ =
+        db_pimpl_->GetTable(config_ref_.anonymous_table_name).value();
+  }
+}
+
+bool Transaction::Impl::SetTable(const std::string_view table_name) {
+  auto table = db_pimpl_->GetTable(table_name);
+  if (!table.has_value()) {
+    return false;  // Table not found
+  }
+  current_table_ = table.value();
+  return true;
+}
+
 TxStatus Transaction::GetCurrentStatus() {
   return tx_pimpl_->GetCurrentStatus();
 }
@@ -849,6 +888,10 @@ bool Transaction::ValidateSKNotNull() { return tx_pimpl_->ValidateSKNotNull(); }
 
 void Transaction::Abort() { tx_pimpl_->Abort(); }
 bool Transaction::Precommit() { return tx_pimpl_->Precommit(); }
+
+bool Transaction::SetTable(const std::string_view table_name) {
+  return tx_pimpl_->SetTable(table_name);
+}
 
 Transaction::Transaction(void* db_pimpl) noexcept
     : tx_pimpl_(

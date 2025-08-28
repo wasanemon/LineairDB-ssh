@@ -44,8 +44,8 @@ struct Snapshot {
   }
 };
 
-using ReadSetType = std::vector<Snapshot>;
-using WriteSetType = std::vector<Snapshot>;
+using ReadSetType = std::unordered_map<std::string, std::vector<Snapshot>>;
+using WriteSetType = std::unordered_map<std::string, std::vector<Snapshot>>;
 
 }  // namespace LineairDB
 

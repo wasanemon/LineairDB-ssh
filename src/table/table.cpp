@@ -1,8 +1,13 @@
 #include "table/table.h"
 
 #include <shared_mutex>
+#include <string_view>
 #include <tuple>
 #include <utility>
+
+#include "index/concurrent_table.h"
+#include "lineairdb/config.h"
+#include "util/epoch_framework.hpp"
 // #include "index/secondary_index.h"  // now included from table.h
 
 namespace LineairDB {
@@ -20,4 +25,12 @@ Index::SecondaryIndexInterface* Table::GetSecondaryIndex(
   }
   return it->second.get();
 }
+
+Table::Table(EpochFramework& epoch_framework, const Config& config,
+             std::string_view table_name)
+    : primary_index_(epoch_framework, config), table_name_(table_name) {}
+
+const std::string& Table::GetTableName() const { return table_name_; }
+Index::ConcurrentTable& Table::GetPrimaryIndex() { return primary_index_; }
+
 }  // namespace LineairDB
