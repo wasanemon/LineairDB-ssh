@@ -65,4 +65,17 @@ bool Database::CreateTable(const std::string_view table_name) {
   return db_pimpl_->CreateTable(table_name);
 }
 
+bool Database::CreateSecondaryIndex(const std::string_view table_name,
+                                    const std::string_view index_name,
+                                    const std::type_info& key_type) {
+  if (key_type == typeid(int)) {
+    return db_pimpl_->CreateSecondaryIndex<int>(table_name, index_name);
+  } else if (key_type == typeid(std::string)) {
+    return db_pimpl_->CreateSecondaryIndex<std::string>(table_name, index_name);
+  } else if (key_type == typeid(std::time_t)) {
+    return db_pimpl_->CreateSecondaryIndex<std::time_t>(table_name, index_name);
+  }
+  return false;
+}
+
 }  // namespace LineairDB

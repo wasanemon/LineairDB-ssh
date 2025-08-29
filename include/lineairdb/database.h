@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <typeinfo>
 
 #include "config.h"
 #include "tx_status.h"
@@ -160,6 +161,35 @@ class Database {
    * exists.
    */
   bool CreateTable(const std::string_view table_name);
+
+  /**
+   * @brief
+   * Creates a new secondary index.
+   * @param[in] table_name The name of the table to create the index on.
+   * @param[in] index_name The name of the index to create.
+   * @return true when a new index is created (the name was not previously
+   */
+
+  template <typename K>
+  bool CreateSecondaryIndex(const std::string_view table_name,
+                            const std::string_view index_name) {
+    return CreateSecondaryIndex(table_name, index_name, typeid(K));
+  }
+
+  /**
+   * @brief
+   * Creates a new secondary index.
+   * @param[in] table_name The name of the table to create the index on.
+   * @param[in] index_name The name of the index to create.
+   * @param[in] key_type The type of the key to create the index on.
+   * @return true when a new index is created (the name was not previously
+   * used).
+   * @return false when no index is created because the index name already
+   * exists.
+   */
+  bool CreateSecondaryIndex(const std::string_view table_name,
+                            const std::string_view index_name,
+                            const std::type_info& key_type);
 
  private:
   class Impl;

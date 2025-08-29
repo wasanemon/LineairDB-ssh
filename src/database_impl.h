@@ -272,6 +272,15 @@ class Database::Impl {
     return std::nullopt;
   }
 
+  template <typename K>
+  bool CreateSecondaryIndex(const std::string_view table_name,
+                            const std::string_view index_name) {
+    std::shared_lock<std::shared_mutex> lk(schema_mutex_);
+    auto it = tables_.find(std::string(table_name));
+    if (it == tables_.end()) return false;
+    return it->second->CreateSecondaryIndex<K>(index_name);
+  }
+
  private:
   void Recovery() {
     SPDLOG_INFO("Start recovery process");
