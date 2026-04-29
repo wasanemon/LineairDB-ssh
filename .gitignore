@@ -92,3 +92,7 @@ Temporary Items
 .history
 
 # End of https://www.gitignore.io/api/osx,c++,linux,visualstudiocode
+
+# Local env files (Next.js app)
+mvp-x-manager/.env.local
+mvp-x-manager/.env.*.local
